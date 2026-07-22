@@ -760,11 +760,52 @@ function insertTextAtCursor(text){
 });
 
 /* ---------------- 붙여넣기: 서식 제거, 줄바꿈(엔터)만 유지 ---------------- */
+function insertPlainTextStripped(text){
+  editor.focus();
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return;
+  const range = sel.getRangeAt(0).cloneRange();
+  if (!range.collapsed) range.deleteContents();
+
+  // 삽입 지점에 표시용 마커를 심어서, 붙여넣을 위치가 기존 서식(색/배경/폰트 등)이 걸린 span 안이어도
+  // 나중에 그 구간만 정확히 되짚어 서식을 벗겨낼 수 있게 함
+  const marker = document.createElement('span');
+  range.insertNode(marker);
+  const afterMarker = document.createRange();
+  afterMarker.setStartAfter(marker);
+  afterMarker.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(afterMarker);
+
+  document.execCommand('insertText', false, text);
+
+  const endSel = window.getSelection();
+  if (endSel.rangeCount){
+    const endRange = endSel.getRangeAt(0).cloneRange();
+    const stripRange = document.createRange();
+    stripRange.setStartAfter(marker);
+    stripRange.setEnd(endRange.endContainer, endRange.endOffset);
+    if (!stripRange.collapsed){
+      endSel.removeAllRanges();
+      endSel.addRange(stripRange);
+      document.execCommand('removeFormat', false, null); // 색/배경/폰트/자간 등 남아있는 서식 강제로 벗겨냄
+    }
+  }
+  marker.remove();
+  const finalSel = window.getSelection();
+  if (finalSel.rangeCount) finalSel.collapseToEnd();
+  reapplyParagraphSpacing();
+}
+
 editor.addEventListener('paste', (e)=>{
   e.preventDefault();
-  const text = (e.clipboardData || window.clipboardData).getData('text/plain');
-  if (!text) return;
-  document.execCommand('insertText', false, text);
+  const cd = e.clipboardData || window.clipboardData;
+  const text = cd ? cd.getData('text/plain') : '';
+  if (text){
+    insertPlainTextStripped(text);
+  } else if (navigator.clipboard && navigator.clipboard.readText){
+    navigator.clipboard.readText().then(t=>{ if (t) insertPlainTextStripped(t); }).catch(()=>{});
+  }
 });
 
 /* ---------------- 스마트 따옴표 / 말줄임표 / 괄호 ---------------- */
