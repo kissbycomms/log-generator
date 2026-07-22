@@ -759,6 +759,14 @@ function insertTextAtCursor(text){
   btn.addEventListener('click', ()=> insertTextAtCursor(ch));
 });
 
+/* ---------------- 붙여넣기: 서식 제거, 줄바꿈(엔터)만 유지 ---------------- */
+editor.addEventListener('paste', (e)=>{
+  e.preventDefault();
+  const text = (e.clipboardData || window.clipboardData).getData('text/plain');
+  if (!text) return;
+  document.execCommand('insertText', false, text);
+});
+
 /* ---------------- 스마트 따옴표 / 말줄임표 / 괄호 ---------------- */
 editor.addEventListener('beforeinput', (e)=>{
   if (e.inputType !== 'insertText' || !e.data) return;
