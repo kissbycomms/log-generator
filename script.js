@@ -125,6 +125,8 @@ document.getElementById('btnReset').addEventListener('click', ()=>{
   renderSnippets();
   sourceState = {enabled:false, text:'', position:'bottom-right', offsetX:20, offsetY:20, color:'#888888', size:12};
   applySourceStateToUI();
+  msgFontState = {fontFamily:"'Pretendard',-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo',sans-serif", weight:400, size:14, letterSpacing:0};
+  applyMsgFontStateToUI();
   applyStateToUI();
   applyGlobalStyles();
   syncPreview();
@@ -151,41 +153,77 @@ function insertTextAtCursor(text){
   btn.addEventListener('click', ()=> insertTextAtCursor(ch));
 });
 
-/* ---------------- 붙여넣기: 서식 제거, 줄바꿈(엔터)만 유지 ---------------- */
+/* ---------------- 붙여넣기: 서식 완전히 제거, 줄바꿈(엔터)만 유지 ----------------
+   기존에는 execCommand('insertText') 로 붙여넣은 뒤 execCommand('removeFormat') 으로
+   서식을 벗겨내는 방식이었는데, removeFormat 은 bold/italic/font/color 같은 '레거시
+   서식 명령'만 확실히 지워주고 letter-spacing, transform(장평), background-color 같은
+   순수 CSS 속성은 브라우저에 따라 끝까지 못 지우는 경우가 있어서 원본 서식이 남는
+   문제가 있었음. 그래서 애초에 서식이 붙을 수 없는 순수 텍스트 노드/div를 직접 만들어
+   삽입하는 방식으로 교체함 (참고용 발췌기와 동일한 방식). 이러면 원본 사이트의
+   장평·폰트·자간·배경색이 원천적으로 따라올 수가 없음. */
+function findDirectChildBlock(node){
+  let el = node && node.nodeType === 3 ? node.parentNode : node;
+  while (el && el.parentNode !== editor){
+    el = el.parentNode;
+  }
+  return el && el !== editor ? el : null;
+}
+
 function insertPlainTextStripped(text){
   editor.focus();
-  const sel = window.getSelection();
-  if (!sel.rangeCount) return;
-  const range = sel.getRangeAt(0).cloneRange();
-  if (!range.collapsed) range.deleteContents();
+  const selection = window.getSelection();
+  if (!selection.rangeCount) return;
+  let range = selection.getRangeAt(0);
+  if (!editor.contains(range.commonAncestorContainer)) return;
+  range.deleteContents();
 
-  // 삽입 지점에 표시용 마커를 심어서, 붙여넣을 위치가 기존 서식(색/배경/폰트 등)이 걸린 span 안이어도
-  // 나중에 그 구간만 정확히 되짚어 서식을 벗겨낼 수 있게 함
-  const marker = document.createElement('span');
-  range.insertNode(marker);
-  const afterMarker = document.createRange();
-  afterMarker.setStartAfter(marker);
-  afterMarker.collapse(true);
-  sel.removeAllRanges();
-  sel.addRange(afterMarker);
+  const lines = text.split(/\r\n|\r|\n/);
 
-  document.execCommand('insertText', false, text);
+  if (lines.length === 1){
+    const textNode = document.createTextNode(lines[0]);
+    range.insertNode(textNode);
+    range.setStartAfter(textNode);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  } else {
+    const firstTextNode = document.createTextNode(lines[0]);
+    range.insertNode(firstTextNode);
 
-  const endSel = window.getSelection();
-  if (endSel.rangeCount){
-    const endRange = endSel.getRangeAt(0).cloneRange();
-    const stripRange = document.createRange();
-    stripRange.setStartAfter(marker);
-    stripRange.setEnd(endRange.endContainer, endRange.endOffset);
-    if (!stripRange.collapsed){
-      endSel.removeAllRanges();
-      endSel.addRange(stripRange);
-      document.execCommand('removeFormat', false, null); // 색/배경/폰트/자간 등 남아있는 서식 강제로 벗겨냄
+    let blockEl = findDirectChildBlock(firstTextNode);
+    if (!blockEl){
+      const wrapper = document.createElement('div');
+      while (editor.firstChild) wrapper.appendChild(editor.firstChild);
+      editor.appendChild(wrapper);
+      blockEl = wrapper;
     }
+
+    let insertAfter = blockEl;
+    let lastInsertedNode = firstTextNode;
+    for (let i = 1; i < lines.length; i++){
+      const newDiv = document.createElement('div');
+      if (lines[i].length > 0){
+        lastInsertedNode = document.createTextNode(lines[i]);
+        newDiv.appendChild(lastInsertedNode);
+      } else {
+        newDiv.appendChild(document.createElement('br'));
+        lastInsertedNode = newDiv;
+      }
+      insertAfter.parentNode.insertBefore(newDiv, insertAfter.nextSibling);
+      insertAfter = newDiv;
+    }
+
+    const newRange = document.createRange();
+    if (lastInsertedNode.nodeType === 3){
+      newRange.setStart(lastInsertedNode, lastInsertedNode.length);
+    } else {
+      newRange.selectNodeContents(lastInsertedNode);
+    }
+    newRange.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(newRange);
   }
-  marker.remove();
-  const finalSel = window.getSelection();
-  if (finalSel.rangeCount) finalSel.collapseToEnd();
+
   reapplyParagraphSpacing();
 }
 
@@ -208,9 +246,12 @@ editor.addEventListener('beforeinput', (e)=>{
   const range = sel.getRangeAt(0);
   if (!range.collapsed) return;
   const node = range.startContainer;
-  if (node.nodeType !== Node.TEXT_NODE) return;
   const offset = range.startOffset;
-  const before = node.textContent.slice(0, offset);
+  // 커서가 빈 편집창이나 새 문단의 맨 앞(아직 텍스트 노드가 없는 지점)에 있을 때는
+  // node가 텍스트 노드가 아니라 div(편집창) 자체라서, 예전엔 여기서 그냥 return 해버려
+  // '문단 맨 앞에서 따옴표를 치면 변환이 안 되는' 현상이 있었음. 이 경우엔 '문단의 맨 앞'과
+  // 동일하게 취급(before='')해서 여는 따옴표로 정상 변환되게 함
+  const before = node.nodeType === Node.TEXT_NODE ? node.textContent.slice(0, offset) : '';
 
   if (e.data === '"' && document.getElementById('chkSmartQuote').checked){
     e.preventDefault();
@@ -415,10 +456,14 @@ selectFontFamily.addEventListener('change', ()=>{
     return;
   }
   rowFontCustom.style.display='none';
-  wrapSelectionStyle({fontFamily: selectFontFamily.value});
+  state.fontFamily = selectFontFamily.value;
+  refreshTextTypography();
 });
 document.getElementById('btnApplyFontCustom').addEventListener('click', ()=>{
-  if (inputFontCustom.value.trim()) wrapSelectionStyle({fontFamily: inputFontCustom.value.trim()});
+  if (inputFontCustom.value.trim()){
+    state.fontFamily = inputFontCustom.value.trim();
+    refreshTextTypography();
+  }
 });
 
 /* 폰트 파일 직접 업로드 (FontFace API) */
@@ -441,7 +486,8 @@ document.getElementById('inputFontUpload').addEventListener('change', (e)=>{
         selectFontFamily.insertBefore(opt, selectFontFamily.querySelector('option[value="custom"]'));
         selectFontFamily.value = value;
         rowFontCustom.style.display = 'none';
-        wrapSelectionStyle({fontFamily: value});
+        state.fontFamily = value;
+        refreshTextTypography();
       }).catch((err)=>{
         alert('폰트 파일을 불러오지 못했어: ' + err.message);
       });
@@ -468,23 +514,6 @@ function makeStepper(minusId, plusId, inputId, step, min, max, onChange){
   input.addEventListener('change', ()=> commit(parseFloat(input.value)||0));
 }
 
-function hasLiveSelection(){
-  return !!(savedRange && !savedRange.collapsed && editor.contains(savedRange.commonAncestorContainer));
-}
-
-/* 드래그 선택이 없는 경우(전체 기본값 조정)에는 state에도 값을 반영해서,
-   초기화·프리셋 저장이 실제로 조정한 값을 따라가게 함 */
-function applyFontAdjust(styleObj, stateKey, v){
-  if (!hasLiveSelection()) state[stateKey] = v;
-  wrapSelectionStyle(styleObj);
-}
-
-makeStepper('btnWeightMinus','btnWeightPlus','inputWeight',100,100,900, v=> applyFontAdjust({fontWeight:String(v)}, 'fontWeight', v));
-makeStepper('btnSizeMinus','btnSizePlus','inputSize',5,6,300, v=> applyFontAdjust({fontSize:v+'px'}, 'size', v));
-makeStepper('btnLsMinus','btnLsPlus','inputLs',1,-20,100, v=> applyFontAdjust({letterSpacing:v+'px'}, 'letterSpacing', v));
-makeStepper('btnLhMinus','btnLhPlus','inputLh',1,0,300, v=> applyFontAdjust({lineHeight:v+'px'}, 'lineHeight', v));
-makeStepper('btnParaMinus','btnParaPlus','inputPara',1,0,200, v=>{ state.paragraphSpacing=v; reapplyParagraphSpacing(); });
-
 /* 장평(가로 압축/확장)의 기준점을 정렬 방식에 맞춰 정함.
    예전엔 항상 왼쪽 위를 기준으로 눌러서, 중앙정렬 텍스트도 장평을 줄일수록
    전체가 왼쪽으로 쏠려 보이는 문제가 있었음. 정렬이 중앙이면 중앙을 기준으로,
@@ -496,49 +525,79 @@ function getTrackingOrigin(){
   return 'center';
 }
 
-/* 장평은 드래그 선택 시에는 선택된 글자만 inline-block으로 감싸 눌러야 하지만,
-   선택이 없을 때(전체 기본값)는 컨테이너 자체를 inline-block으로 바꾸면 안 됨(레이아웃이 깨져 왼쪽으로 붙어버림).
-   그래서 선택 여부에 따라 완전히 다른 방식으로 처리함 */
-function applyTrackingValue(v){
-  if (hasLiveSelection()){
-    wrapSelectionStyle({display:'inline-block', transform:'scaleX('+(v/100)+')'});
-  } else {
-    state.tracking = v;
-    setGlobalStyle({transform:'scaleX('+(v/100)+')', transformOrigin:getTrackingOrigin()});
-  }
+/* 폰트 섹션(폰트/굵기/크기/자간/행간/장평/정렬/줄바꿈)은 커서 위치나 드래그 선택과 무관하게
+   항상 본문 전체에 적용됨. 왼쪽 입력창(bodyEditBox)에는 절대 반영하지 않고, 오른쪽 미리보기의
+   본문 텍스트 블록에만 스코프된 스타일 규칙으로 적용해서 HTML 삽입 블록이나 메시지 말풍선은
+   이 조정에 영향을 받지 않게 함 */
+const textTypographyStyleTag = document.createElement('style');
+document.head.appendChild(textTypographyStyleTag);
+function refreshTextTypography(){
+  const scale = state.tracking/100;
+  const origin = getTrackingOrigin();
+  /* 장평(가로 압축/확장) 적용 방식: transform:scaleX 만 걸면 박스 전체가 그 비율만큼
+     시각적으로 좁아져 보여서(줄바꿈은 원래 너비 기준으로 계산된 뒤 통째로 눌리는 형태라
+     텍스트 영역 자체의 너비가 줄어드는 것처럼 보임) '전체 텍스트 영역의 너비는 그대로 두고
+     개별 글자만 눌려야 한다'는 요구와 어긋났음. 그래서 박스 너비를 먼저 1/scale 배로
+     넓혀서(그 넓어진 너비를 기준으로 줄바꿈이 계산되게 한 뒤) scaleX로 다시 원래 너비만큼
+     눌러주는 방식으로 바꿈. 정렬 기준점에 맞춰 margin-left로 위치도 보정해줌 */
+  let marginLeft = '0';
+  if (origin === 'center') marginLeft = 'calc((100% - 100% / ' + scale + ') / 2)';
+  else if (origin === 'right') marginLeft = 'calc(100% - 100% / ' + scale + ')';
+  textTypographyStyleTag.textContent =
+    '#previewContent .preview-block[data-block-id="text"] .block-content{'+
+    'font-family:'+state.fontFamily+';'+
+    'font-weight:'+state.fontWeight+';'+
+    'font-size:'+state.size+'px;'+
+    'letter-spacing:'+state.letterSpacing+'px;'+
+    'line-height:'+state.lineHeight+'px;'+
+    'text-align:'+state.align+';'+
+    'word-break:'+state.wordBreak+';'+
+    'overflow-wrap:break-word;'+
+    'width:'+(100/scale)+'%;'+
+    'transform:scaleX('+scale+');'+
+    'transform-origin:'+origin+' top;'+
+    'margin-left:'+marginLeft+';'+
+    'display:block;'+
+    '}';
 }
-makeStepper('btnTrackMinus','btnTrackPlus','inputTrack',5,10,300, applyTrackingValue);
 
-/* 문단간격: 커서 위치와 무관하게 본문 전체 문단에 동일하게 적용되도록
-   개별 요소에 인라인 스타일을 거는 대신, 하나의 전역 스타일 규칙으로 처리함 */
+makeStepper('btnWeightMinus','btnWeightPlus','inputWeight',100,100,900, v=>{ state.fontWeight=v; refreshTextTypography(); });
+makeStepper('btnSizeMinus','btnSizePlus','inputSize',5,6,300, v=>{ state.size=v; refreshTextTypography(); });
+makeStepper('btnLsMinus','btnLsPlus','inputLs',1,-20,100, v=>{ state.letterSpacing=v; refreshTextTypography(); });
+makeStepper('btnLhMinus','btnLhPlus','inputLh',1,0,300, v=>{ state.lineHeight=v; refreshTextTypography(); });
+makeStepper('btnParaMinus','btnParaPlus','inputPara',1,0,200, v=>{ state.paragraphSpacing=v; reapplyParagraphSpacing(); });
+makeStepper('btnTrackMinus','btnTrackPlus','inputTrack',5,10,300, v=>{ state.tracking=v; refreshTextTypography(); });
+
+/* 문단간격: 커서 위치와 무관하게 본문 전체 문단에 동일하게 적용되도록,
+   그리고 왼쪽 입력창에는 반영되지 않게 미리보기의 텍스트 블록에만 스코프된 스타일 규칙으로 처리함 */
 const paragraphSpacingStyleTag = document.createElement('style');
 document.head.appendChild(paragraphSpacingStyleTag);
 function reapplyParagraphSpacing(){
   const px = state.paragraphSpacing + 'px';
   paragraphSpacingStyleTag.textContent =
-    '#bodyEditBox div{margin-bottom:'+px+';}' +
     '#previewContent .preview-block[data-block-id="text"] .block-content div{margin-bottom:'+px+';}';
 }
 
-[['btnAlignLeft','justifyLeft','left'],['btnAlignCenter','justifyCenter','center'],['btnAlignRight','justifyRight','right'],['btnAlignJustify','justifyFull','justify']].forEach(([id,cmd,val])=>{
+[['btnAlignLeft','left'],['btnAlignCenter','center'],['btnAlignRight','right'],['btnAlignJustify','justify']].forEach(([id,val])=>{
   const btn = document.getElementById(id);
   preventBlur(btn);
   btn.addEventListener('click', ()=>{
-    applyExecCommand(cmd);
     document.querySelectorAll('#btnAlignLeft,#btnAlignCenter,#btnAlignRight,#btnAlignJustify').forEach(b=>b.classList.remove('active'));
     btn.classList.add('active');
     state.align = val;
-    setGlobalStyle({transformOrigin: getTrackingOrigin()});
+    refreshTextTypography();
   });
 });
 
 document.getElementById('btnWordNormal').addEventListener('click', ()=>{
-  setGlobalStyle({wordBreak:'normal', overflowWrap:'break-word'});
+  state.wordBreak = 'normal';
+  refreshTextTypography();
   document.getElementById('btnWordNormal').classList.add('active');
   document.getElementById('btnWordBreakAll').classList.remove('active');
 });
 document.getElementById('btnWordBreakAll').addEventListener('click', ()=>{
-  setGlobalStyle({wordBreak:'break-all'});
+  state.wordBreak = 'break-all';
+  refreshTextTypography();
   document.getElementById('btnWordBreakAll').classList.add('active');
   document.getElementById('btnWordNormal').classList.remove('active');
 });
@@ -821,14 +880,46 @@ function insertHTMLAtCursor(html){
 
 const messageList = document.getElementById('messageList');
 
+/* 아이메시지 말풍선 전용 폰트 설정. 출처처럼 본문 폰트 섹션과 완전히 독립적으로 움직이고,
+   말풍선 텍스트에만 적용됨(미리보기의 텍스트 블록/HTML 블록에는 영향 없음) */
+let msgFontState = {
+  fontFamily: "'Pretendard',-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo',sans-serif",
+  weight: 400,
+  size: 14,
+  letterSpacing: 0
+};
+const msgFontStyleTag = document.createElement('style');
+document.head.appendChild(msgFontStyleTag);
+function refreshMsgFontStyle(){
+  msgFontStyleTag.textContent =
+    '#previewContent .imsg-bubble{'+
+    'font-family:'+msgFontState.fontFamily+';'+
+    'font-weight:'+msgFontState.weight+';'+
+    'font-size:'+msgFontState.size+'px;'+
+    'letter-spacing:'+msgFontState.letterSpacing+'px;'+
+    '}';
+}
+const selectMsgFontFamily = document.getElementById('selectMsgFontFamily');
+selectMsgFontFamily.addEventListener('change', ()=>{ msgFontState.fontFamily = selectMsgFontFamily.value; refreshMsgFontStyle(); });
+makeStepper('btnMsgWeightMinus','btnMsgWeightPlus','inputMsgWeight',100,100,900, v=>{ msgFontState.weight=v; refreshMsgFontStyle(); });
+makeStepper('btnMsgSizeMinus','btnMsgSizePlus','inputMsgSize',1,8,100, v=>{ msgFontState.size=v; refreshMsgFontStyle(); });
+makeStepper('btnMsgLsMinus','btnMsgLsPlus','inputMsgLs',1,-10,50, v=>{ msgFontState.letterSpacing=v; refreshMsgFontStyle(); });
+
+function applyMsgFontStateToUI(){
+  selectMsgFontFamily.value = msgFontState.fontFamily;
+  document.getElementById('inputMsgWeight').value = msgFontState.weight;
+  document.getElementById('inputMsgSize').value = msgFontState.size;
+  document.getElementById('inputMsgLs').value = msgFontState.letterSpacing;
+}
+
 function buildMessageHTML(m){
   const list = msgColors[m.side] || msgColors.left;
   const c = list[m.colorIndex] || list[0];
   const bodyText = m.text && m.text.trim() ? escapeHTML(m.text) : '&nbsp;';
-  return `<div class="imsg-block"><div class="imsg-row ${m.side}"><div class="imsg-bubble" style="background:${c.value};color:${c.text};font-family:${state.fontFamily};">${bodyText}</div></div></div>`;
+  return `<div class="imsg-block"><div class="imsg-row ${m.side}"><div class="imsg-bubble" style="background:${c.value};color:${c.text};">${bodyText}</div></div></div>`;
 }
 function buildProfileHTML(m){
-  return `<div class="imsg-profile-block" style="font-family:${state.fontFamily};"><img class="imsg-profile-img" src="${m.imgSrc||''}"><div class="imsg-profile-name">${escapeHTML(m.name||'이름 없음')}</div></div>`;
+  return `<div class="imsg-profile-block" style="font-family:${msgFontState.fontFamily};"><img class="imsg-profile-img" src="${m.imgSrc||''}"><div class="imsg-profile-name">${escapeHTML(m.name||'이름 없음')}</div></div>`;
 }
 
 function removeMessage(id){
@@ -1033,6 +1124,7 @@ document.getElementById('btnAddSnippet').addEventListener('click', ()=>{
 
 /* ---------------- 상태 -> UI 반영 ---------------- */
 function applyStateToUI(){
+  document.getElementById('inputWeight').value = state.fontWeight;
   document.getElementById('inputSize').value = state.size;
   document.getElementById('inputLs').value = state.letterSpacing;
   document.getElementById('inputLh').value = state.lineHeight;
@@ -1043,6 +1135,17 @@ function applyStateToUI(){
   document.getElementById('inputPadY').value = state.padY;
   document.getElementById('inputZoom').value = state.zoom;
   setBgColor(state.bgColor);
+
+  const fontOpt = [...selectFontFamily.options].find(o=>o.value===state.fontFamily);
+  if (fontOpt){ selectFontFamily.value = state.fontFamily; rowFontCustom.style.display='none'; }
+  else { selectFontFamily.value = 'custom'; rowFontCustom.style.display='flex'; inputFontCustom.value = state.fontFamily; }
+
+  document.querySelectorAll('#btnAlignLeft,#btnAlignCenter,#btnAlignRight,#btnAlignJustify').forEach(b=>b.classList.remove('active'));
+  const alignBtnId = {left:'btnAlignLeft', center:'btnAlignCenter', right:'btnAlignRight', justify:'btnAlignJustify'}[state.align] || 'btnAlignCenter';
+  document.getElementById(alignBtnId).classList.add('active');
+  document.getElementById('btnWordNormal').classList.toggle('active', state.wordBreak !== 'break-all');
+  document.getElementById('btnWordBreakAll').classList.toggle('active', state.wordBreak === 'break-all');
+
   RATIO_BUTTON_IDS.forEach(i=>document.getElementById(i).classList.remove('active'));
   const activeRatioId = Object.keys(RATIO_KEY_MAP).find(k=>RATIO_KEY_MAP[k]===state.ratio) || 'btnRatioAuto';
   document.getElementById(activeRatioId).classList.add('active');
@@ -1051,26 +1154,19 @@ function applyStateToUI(){
 }
 
 function applyGlobalStyles(){
-  setGlobalStyle({
-    fontFamily: state.fontFamily,
-    fontWeight: String(state.fontWeight),
-    fontSize: state.size+'px',
-    letterSpacing: state.letterSpacing+'px',
-    lineHeight: state.lineHeight+'px',
-    textAlign: state.align,
-    transform: 'scaleX('+(state.tracking/100)+')',
-    transformOrigin: getTrackingOrigin()
-  });
+  refreshTextTypography();
   previewContent.style.paddingLeft = state.padX+'px';
   previewContent.style.paddingRight = state.padX+'px';
   previewContent.style.paddingTop = state.padY+'px';
   previewContent.style.paddingBottom = state.padY+'px';
   reapplyParagraphSpacing();
+  refreshMsgFontStyle();
 }
 
 applyStateToUI();
 applyGlobalStyles();
 applySourceStateToUI();
+applyMsgFontStateToUI();
 syncPreview();
 
 /* ---------------- 저장 (내보내기) ---------------- */
