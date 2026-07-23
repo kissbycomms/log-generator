@@ -153,31 +153,184 @@ function insertTextAtCursor(text){
   btn.addEventListener('click', ()=> insertTextAtCursor(ch));
 });
 
-/* ---------------- 붙여넣기: 서식 완전히 제거, 줄바꿈(엔터)만 유지 ----------------
-   기존에는 execCommand('insertText') 로 붙여넣은 뒤 execCommand('removeFormat') 으로
-   서식을 벗겨내는 방식이었는데, removeFormat 은 bold/italic/font/color 같은 '레거시
-   서식 명령'만 확실히 지워주고 letter-spacing, transform(장평), background-color 같은
-   순수 CSS 속성은 브라우저에 따라 끝까지 못 지우는 경우가 있어서 원본 서식이 남는
-   문제가 있었음. 그래서 애초에 서식이 붙을 수 없는 순수 텍스트 노드/div를 직접 만들어
-   삽입하는 방식으로 교체함 (참고용 발췌기와 동일한 방식). 이러면 원본 사이트의
-   장평·폰트·자간·배경색이 원천적으로 따라올 수가 없음. */
+/* ---------------- IME(한글) 조합 상태 추적 ----------------
+   한글 자모를 조합하는 도중에 아래 줄바꿈/삭제 커스텀 처리가 끼어들면 조합이 깨지므로,
+   조합 중에는 keydown 핸들러가 개입하지 않도록 플래그로 막아둠. */
+let isComposingIME = false;
+editor.addEventListener('compositionstart', ()=>{ isComposingIME = true; });
+editor.addEventListener('compositionend', ()=>{ isComposingIME = false; });
+
+/* ---------------- 문단(줄) 단위 구조 처리 ----------------
+   기본 contenteditable 동작에만 맡기지 않고, 엔터/백스페이스/Delete로 문단(div)을
+   직접 나누고 합쳐서 항상 예측 가능한 구조(문단마다 하나의 div)를 유지함. */
 function findDirectChildBlock(node){
-  let el = node && node.nodeType === 3 ? node.parentNode : node;
-  while (el && el.parentNode !== editor){
-    el = el.parentNode;
-  }
+  let el = node && node.nodeType === Node.TEXT_NODE ? node.parentNode : node;
+  while (el && el.parentNode !== editor) el = el.parentNode;
   return el && el !== editor ? el : null;
 }
 
-function insertPlainTextStripped(text){
+function splitParagraphAtCaret(){
+  const selection = window.getSelection();
+  if (!selection.rangeCount) return;
+  const range = selection.getRangeAt(0);
+  if (!editor.contains(range.commonAncestorContainer)) return;
+  range.deleteContents();
+
+  let blockEl = findDirectChildBlock(range.startContainer);
+  if (!blockEl){
+    const wrapper = document.createElement('div');
+    while (editor.firstChild) wrapper.appendChild(editor.firstChild);
+    editor.appendChild(wrapper);
+    blockEl = wrapper;
+  }
+
+  const newBlock = document.createElement('div');
+  if (blockEl.className) newBlock.className = blockEl.className;
+  if (blockEl.style && blockEl.style.textAlign) newBlock.style.textAlign = blockEl.style.textAlign;
+
+  const afterRange = document.createRange();
+  afterRange.setStart(range.startContainer, range.startOffset);
+  afterRange.setEndAfter(blockEl.lastChild || blockEl);
+  newBlock.appendChild(afterRange.extractContents());
+
+  if (blockEl.parentNode === editor){
+    editor.insertBefore(newBlock, blockEl.nextSibling);
+  } else {
+    editor.appendChild(newBlock);
+  }
+
+  if (!blockEl.hasChildNodes() || blockEl.textContent === ''){
+    blockEl.innerHTML = '';
+    blockEl.appendChild(document.createElement('br'));
+  }
+  if (!newBlock.hasChildNodes() || newBlock.textContent === ''){
+    newBlock.innerHTML = '';
+    newBlock.appendChild(document.createElement('br'));
+  }
+
+  const newRange = document.createRange();
+  newRange.setStart(newBlock, 0);
+  newRange.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(newRange);
+  return newBlock;
+}
+
+function mergeParagraphBackward(){
+  const selection = window.getSelection();
+  if (!selection.rangeCount || !selection.isCollapsed) return false;
+  const range = selection.getRangeAt(0);
+  if (!editor.contains(range.startContainer)) return false;
+
+  const blockEl = findDirectChildBlock(range.startContainer);
+  if (!blockEl) return false;
+
+  const preRange = document.createRange();
+  preRange.selectNodeContents(blockEl);
+  preRange.setEnd(range.startContainer, range.startOffset);
+  if (preRange.toString().length !== 0) return false;
+
+  const prevBlock = blockEl.previousElementSibling;
+  if (!prevBlock) return false;
+
+  if (prevBlock.childNodes.length === 1 && prevBlock.firstChild.nodeName === 'BR'){
+    prevBlock.innerHTML = '';
+  }
+
+  const caretMarker = document.createElement('span');
+  caretMarker.setAttribute('data-caret-marker', '1');
+  prevBlock.appendChild(caretMarker);
+
+  const isEmptyBlock = blockEl.childNodes.length === 1 && blockEl.firstChild.nodeName === 'BR';
+  if (!isEmptyBlock){
+    while (blockEl.firstChild) prevBlock.appendChild(blockEl.firstChild);
+  }
+  blockEl.remove();
+
+  const marker = prevBlock.querySelector('[data-caret-marker]');
+  if (marker){
+    const newRange = document.createRange();
+    newRange.setStartBefore(marker);
+    newRange.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(newRange);
+    marker.remove();
+  }
+  return true;
+}
+
+function mergeParagraphForward(){
+  const selection = window.getSelection();
+  if (!selection.rangeCount || !selection.isCollapsed) return false;
+  const range = selection.getRangeAt(0);
+  if (!editor.contains(range.startContainer)) return false;
+
+  const blockEl = findDirectChildBlock(range.startContainer);
+  if (!blockEl) return false;
+
+  const postRange = document.createRange();
+  postRange.selectNodeContents(blockEl);
+  postRange.setStart(range.startContainer, range.startOffset);
+  if (postRange.toString().length !== 0) return false;
+
+  const nextBlock = blockEl.nextElementSibling;
+  if (!nextBlock) return false;
+
+  if (blockEl.childNodes.length === 1 && blockEl.firstChild.nodeName === 'BR'){
+    blockEl.innerHTML = '';
+  }
+
+  const caretMarker = document.createElement('span');
+  caretMarker.setAttribute('data-caret-marker', '1');
+  blockEl.appendChild(caretMarker);
+
+  const isEmptyBlock = nextBlock.childNodes.length === 1 && nextBlock.firstChild.nodeName === 'BR';
+  if (!isEmptyBlock){
+    while (nextBlock.firstChild) blockEl.appendChild(nextBlock.firstChild);
+  }
+  nextBlock.remove();
+
+  const marker = blockEl.querySelector('[data-caret-marker]');
+  if (marker){
+    const newRange = document.createRange();
+    newRange.setStartBefore(marker);
+    newRange.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(newRange);
+    marker.remove();
+  }
+  return true;
+}
+
+editor.addEventListener('keydown', function(e){
+  if (isComposingIME) return;
+
+  if (e.key === 'Enter'){
+    e.preventDefault();
+    splitParagraphAtCaret();
+    return;
+  }
+  if (e.key === 'Backspace'){
+    if (mergeParagraphBackward()) e.preventDefault();
+    return;
+  }
+  if (e.key === 'Delete'){
+    if (mergeParagraphForward()) e.preventDefault();
+  }
+});
+
+/* ---------------- 붙여넣기: 서식 제거, 줄마다 새 문단(div)으로 분리해서 삽입 ----------------
+   서식이 실린 span 등을 아예 만들지 않고 순수 텍스트 노드/div로만 구성해서 삽입하기 때문에,
+   기존처럼 마커를 심어 서식을 되짚어 벗겨내는 과정이 필요 없음. */
+function insertPastedText(text){
   editor.focus();
+  const lines = text.split(/\r\n|\r|\n/);
+
   const selection = window.getSelection();
   if (!selection.rangeCount) return;
   let range = selection.getRangeAt(0);
   if (!editor.contains(range.commonAncestorContainer)) return;
   range.deleteContents();
-
-  const lines = text.split(/\r\n|\r|\n/);
 
   if (lines.length === 1){
     const textNode = document.createTextNode(lines[0]);
@@ -200,7 +353,7 @@ function insertPlainTextStripped(text){
 
     let insertAfter = blockEl;
     let lastInsertedNode = firstTextNode;
-    for (let i = 1; i < lines.length; i++){
+    for (let i=1; i<lines.length; i++){
       const newDiv = document.createElement('div');
       if (lines[i].length > 0){
         lastInsertedNode = document.createTextNode(lines[i]);
@@ -214,7 +367,7 @@ function insertPlainTextStripped(text){
     }
 
     const newRange = document.createRange();
-    if (lastInsertedNode.nodeType === 3){
+    if (lastInsertedNode.nodeType === Node.TEXT_NODE){
       newRange.setStart(lastInsertedNode, lastInsertedNode.length);
     } else {
       newRange.selectNodeContents(lastInsertedNode);
@@ -223,40 +376,7 @@ function insertPlainTextStripped(text){
     selection.removeAllRanges();
     selection.addRange(newRange);
   }
-
   reapplyParagraphSpacing();
-}
-
-/* 붙여넣는 텍스트에도 스마트 따옴표/말줄임표를 적용함. 예전에는 타이핑할 때만
-   (beforeinput 이벤트) 변환이 걸리고, 붙여넣기는 원본 문자(", ')가 그대로 들어갔음.
-   붙여넣은 문자열 자체를 한 글자씩 훑으면서 실시간 타이핑과 같은 규칙(직전 문맥이
-   공백/여는 괄호/문장 시작이면 여는 따옴표, 그 외엔 닫는 따옴표)으로 미리 변환해둠 */
-function smartifyPastedText(text){
-  const smartQuote = document.getElementById('chkSmartQuote').checked;
-  const smartEllipsis = document.getElementById('chkSmartEllipsis').checked;
-  if (!smartQuote && !smartEllipsis) return text;
-  let result = '';
-  for (let i = 0; i < text.length; i++){
-    const ch = text[i];
-    if (smartQuote && ch === '"'){
-      const isOpen = result.length === 0 || /[\s([{“‘]$/.test(result);
-      result += isOpen ? CH.ldq : CH.rdq;
-      continue;
-    }
-    if (smartQuote && ch === "'"){
-      const prevChar = result.slice(-1);
-      if (/[a-zA-Z0-9가-힣]/.test(prevChar)) result += CH.rsq;
-      else if (result.length === 0 || /[\s([{“‘]$/.test(result)) result += CH.lsq;
-      else result += CH.rsq;
-      continue;
-    }
-    if (smartEllipsis && ch === '.' && result.slice(-2) === '..'){
-      result = result.slice(0, -2) + CH.ellipsis;
-      continue;
-    }
-    result += ch;
-  }
-  return result;
 }
 
 editor.addEventListener('paste', (e)=>{
@@ -264,9 +384,9 @@ editor.addEventListener('paste', (e)=>{
   const cd = e.clipboardData || window.clipboardData;
   const text = cd ? cd.getData('text/plain') : '';
   if (text){
-    insertPlainTextStripped(smartifyPastedText(text));
+    insertPastedText(text);
   } else if (navigator.clipboard && navigator.clipboard.readText){
-    navigator.clipboard.readText().then(t=>{ if (t) insertPlainTextStripped(smartifyPastedText(t)); }).catch(()=>{});
+    navigator.clipboard.readText().then(t=>{ if (t) insertPastedText(t); }).catch(()=>{});
   }
 });
 
@@ -278,12 +398,9 @@ editor.addEventListener('beforeinput', (e)=>{
   const range = sel.getRangeAt(0);
   if (!range.collapsed) return;
   const node = range.startContainer;
+  if (node.nodeType !== Node.TEXT_NODE) return;
   const offset = range.startOffset;
-  // 커서가 빈 편집창이나 새 문단의 맨 앞(아직 텍스트 노드가 없는 지점)에 있을 때는
-  // node가 텍스트 노드가 아니라 div(편집창) 자체라서, 예전엔 여기서 그냥 return 해버려
-  // '문단 맨 앞에서 따옴표를 치면 변환이 안 되는' 현상이 있었음. 이 경우엔 '문단의 맨 앞'과
-  // 동일하게 취급(before='')해서 여는 따옴표로 정상 변환되게 함
-  const before = node.nodeType === Node.TEXT_NODE ? node.textContent.slice(0, offset) : '';
+  const before = node.textContent.slice(0, offset);
 
   if (e.data === '"' && document.getElementById('chkSmartQuote').checked){
     e.preventDefault();
@@ -564,17 +681,6 @@ function getTrackingOrigin(){
 const textTypographyStyleTag = document.createElement('style');
 document.head.appendChild(textTypographyStyleTag);
 function refreshTextTypography(){
-  const scale = state.tracking/100;
-  const origin = getTrackingOrigin();
-  /* 장평(가로 압축/확장) 적용 방식: transform:scaleX 만 걸면 박스 전체가 그 비율만큼
-     시각적으로 좁아져 보여서(줄바꿈은 원래 너비 기준으로 계산된 뒤 통째로 눌리는 형태라
-     텍스트 영역 자체의 너비가 줄어드는 것처럼 보임) '전체 텍스트 영역의 너비는 그대로 두고
-     개별 글자만 눌려야 한다'는 요구와 어긋났음. 그래서 박스 너비를 먼저 1/scale 배로
-     넓혀서(그 넓어진 너비를 기준으로 줄바꿈이 계산되게 한 뒤) scaleX로 다시 원래 너비만큼
-     눌러주는 방식으로 바꿈. 정렬 기준점에 맞춰 margin-left로 위치도 보정해줌 */
-  let marginLeft = '0';
-  if (origin === 'center') marginLeft = 'calc((100% - 100% / ' + scale + ') / 2)';
-  else if (origin === 'right') marginLeft = 'calc(100% - 100% / ' + scale + ')';
   textTypographyStyleTag.textContent =
     '#previewContent .preview-block[data-block-id="text"] .block-content{'+
     'font-family:'+state.fontFamily+';'+
@@ -585,10 +691,8 @@ function refreshTextTypography(){
     'text-align:'+state.align+';'+
     'word-break:'+state.wordBreak+';'+
     'overflow-wrap:break-word;'+
-    'width:'+(100/scale)+'%;'+
-    'transform:scaleX('+scale+');'+
-    'transform-origin:'+origin+' top;'+
-    'margin-left:'+marginLeft+';'+
+    'transform:scaleX('+(state.tracking/100)+');'+
+    'transform-origin:'+getTrackingOrigin()+';'+
     'display:block;'+
     '}';
 }
