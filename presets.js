@@ -13,7 +13,7 @@ function savePresetsToStorage(list){ localStorage.setItem(PRESET_KEY, JSON.strin
 
 function collectSettings(){
   return JSON.parse(JSON.stringify({
-    state, bgMode, mainTextColor, dialogueColors, paletteHi, sourceState,
+    state, bgMode, mainTextColor, dialogueColors, paletteHi, sourceState, msgFontState,
     bracketColor: document.getElementById('colorBracket').value,
     bracketOn: document.getElementById('chkBracketColor').checked,
     smartQuote: document.getElementById('chkSmartQuote').checked,
@@ -40,10 +40,11 @@ function applySettings(s){
   document.getElementById('chkSmartEllipsis').checked = s.smartEllipsis;
   sourceState = s.sourceState || {enabled:false, text:'', position:'bottom-right', offsetX:20, offsetY:20, color:'#888888', size:12};
   applySourceStateToUI();
+  msgFontState = s.msgFontState || {fontFamily:"'Pretendard',-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo',sans-serif", weight:400, size:14, letterSpacing:0};
+  applyMsgFontStateToUI();
   applyStateToUI();
   applyGlobalStyles();
   setBgMode(bgMode);
-  if (s.wordBreakAll) document.getElementById('btnWordBreakAll').click(); else document.getElementById('btnWordNormal').click();
   syncPreview();
 }
 
