@@ -274,7 +274,7 @@
               <span class="unit">%</span>
             </div>
           </div>
-          <div class="help">크기·자간·행간·장평은 드래그로 선택한 부분에만 적용돼. 선택 없이 조정하면 전체 기본값이 바뀜. 문단간격은 항상 전체 기준.</div>
+          <div class="help">이 섹션의 모든 항목은 커서 위치와 상관없이 본문 전체에 적용돼. 왼쪽 입력창에는 반영되지 않고, 오른쪽 미리보기에만 적용돼.</div>
         </div>
       </div>
 
@@ -288,6 +288,52 @@
           </div>
           <div class="mini-list" id="messageList"></div>
           <div class="help">말풍선/프로필은 여기 박스 안에서만 내용을 수정해. 우측 미리보기에서 각 블록 좌상단에 나타나는 ⠿ 를 꾹 눌러 드래그하면 본문과의 위/아래 순서를 바꿀 수 있어.</div>
+
+          <hr class="divider">
+          <div class="row">
+            <span class="label" style="min-width:auto;">말풍선 폰트</span>
+            <select id="selectMsgFontFamily" style="flex:1;">
+              <option value="'Pretendard',-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo',sans-serif">Pretendard (기본)</option>
+              <option value="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo',sans-serif">시스템 기본</option>
+              <option value="'Hakgyoansim Bareondotum R',sans-serif">학교안심 바른돋움 R</option>
+              <option value="'Hakgyoansim Bareondotum B',sans-serif">학교안심 바른돋움 B</option>
+              <option value="'KoPub Batang Light',serif">KoPub 바탕 Light</option>
+              <option value="'KoPub Batang Medium',serif">KoPub 바탕 Medium</option>
+              <option value="'KoPub Batang Bold',serif">KoPub 바탕 Bold</option>
+              <option value="'KoPub Dotum Light',sans-serif">KoPub 돋움 Light</option>
+              <option value="'KoPub Dotum Medium',sans-serif">KoPub 돋움 Medium</option>
+              <option value="'KoPub Dotum Bold',sans-serif">KoPub 돋움 Bold</option>
+            </select>
+          </div>
+          <div class="row two-col">
+            <div class="field">
+              <span class="label">굵기</span>
+              <div class="stepper">
+                <button id="btnMsgWeightMinus">−</button>
+                <input type="number" id="inputMsgWeight" value="400" step="100" min="100" max="900">
+                <button id="btnMsgWeightPlus">+</button>
+              </div>
+            </div>
+            <div class="field">
+              <span class="label">크기</span>
+              <div class="stepper">
+                <button id="btnMsgSizeMinus">−</button>
+                <input type="number" id="inputMsgSize" value="14">
+                <button id="btnMsgSizePlus">+</button>
+                <span class="unit">px</span>
+              </div>
+            </div>
+          </div>
+          <div class="row">
+            <span class="label">자간</span>
+            <div class="stepper">
+              <button id="btnMsgLsMinus">−</button>
+              <input type="number" id="inputMsgLs" value="0">
+              <button id="btnMsgLsPlus">+</button>
+              <span class="unit">px</span>
+            </div>
+          </div>
+          <div class="help">말풍선 폰트는 본문 폰트 설정과 완전히 별개로, 말풍선 텍스트에만 적용돼.</div>
         </div>
       </div>
 
@@ -297,7 +343,7 @@
         <div class="section-body">
           <button id="btnAddSnippet">+ 새 코드 추가</button>
           <div class="mini-list" id="snippetList"></div>
-          <div class="help">코드마다 독립된 박스로 관리되고, 추가하는 즉시 우측 미리보기에 블록으로 나타나. 메시지 블록처럼 미리보기에서 ⠿ 를 꾹 눌러 드래그하면 코드 박스 단위로 위/아래 순서를 바꿀 수 있어.</div>
+          <div class="help">코드마다 독립된 박스로 관리되고, 추가하는 즉시 우측 미리보기에 블록으로 나타나. 메시지 블록처럼 미리보기에서 ⠿ 를 꾹 눌러 드래그하면 코드 박스 단위로 위/아래 순서를 바꿀 수 있어. 코드 안의 텍스트는 폰트 섹션 조정의 영향을 받지 않고, 코드에 적힌 스타일 그대로 유지돼.</div>
         </div>
       </div>
 
