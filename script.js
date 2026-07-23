@@ -227,14 +227,46 @@ function insertPlainTextStripped(text){
   reapplyParagraphSpacing();
 }
 
+/* 붙여넣는 텍스트에도 스마트 따옴표/말줄임표를 적용함. 예전에는 타이핑할 때만
+   (beforeinput 이벤트) 변환이 걸리고, 붙여넣기는 원본 문자(", ')가 그대로 들어갔음.
+   붙여넣은 문자열 자체를 한 글자씩 훑으면서 실시간 타이핑과 같은 규칙(직전 문맥이
+   공백/여는 괄호/문장 시작이면 여는 따옴표, 그 외엔 닫는 따옴표)으로 미리 변환해둠 */
+function smartifyPastedText(text){
+  const smartQuote = document.getElementById('chkSmartQuote').checked;
+  const smartEllipsis = document.getElementById('chkSmartEllipsis').checked;
+  if (!smartQuote && !smartEllipsis) return text;
+  let result = '';
+  for (let i = 0; i < text.length; i++){
+    const ch = text[i];
+    if (smartQuote && ch === '"'){
+      const isOpen = result.length === 0 || /[\s([{“‘]$/.test(result);
+      result += isOpen ? CH.ldq : CH.rdq;
+      continue;
+    }
+    if (smartQuote && ch === "'"){
+      const prevChar = result.slice(-1);
+      if (/[a-zA-Z0-9가-힣]/.test(prevChar)) result += CH.rsq;
+      else if (result.length === 0 || /[\s([{“‘]$/.test(result)) result += CH.lsq;
+      else result += CH.rsq;
+      continue;
+    }
+    if (smartEllipsis && ch === '.' && result.slice(-2) === '..'){
+      result = result.slice(0, -2) + CH.ellipsis;
+      continue;
+    }
+    result += ch;
+  }
+  return result;
+}
+
 editor.addEventListener('paste', (e)=>{
   e.preventDefault();
   const cd = e.clipboardData || window.clipboardData;
   const text = cd ? cd.getData('text/plain') : '';
   if (text){
-    insertPlainTextStripped(text);
+    insertPlainTextStripped(smartifyPastedText(text));
   } else if (navigator.clipboard && navigator.clipboard.readText){
-    navigator.clipboard.readText().then(t=>{ if (t) insertPlainTextStripped(t); }).catch(()=>{});
+    navigator.clipboard.readText().then(t=>{ if (t) insertPlainTextStripped(smartifyPastedText(t)); }).catch(()=>{});
   }
 });
 
